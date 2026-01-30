@@ -16,7 +16,7 @@
 
 \begin{center}
     \LARGE STAT 547D Bayesian Workflow -- Homework \\
-    \Large Isaac Rankin -- 11115722 -- January 30, 2026
+    \Large Isaac Rankin -- January 30, 2026
 \end{center}
 
 
