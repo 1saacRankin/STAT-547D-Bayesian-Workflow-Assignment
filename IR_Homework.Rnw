@@ -1,0 +1,1304 @@
+\documentclass{article}
+
+% Command + Option + V to view the PDF in VSCode
+
+% Trevor's ShorTeX
+\usepackage{shortex}
+
+% Page setup
+\usepackage[left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm]{geometry}
+\setlength{\parindent}{0pt} % No indent at the beginning of paragraphs
+\setlength{\parskip}{7pt}  % Gap between paragraphs
+
+
+
+\begin{document}
+
+\begin{center}
+    \LARGE STAT 547D Bayesian Workflow -- Homework \\
+    \Large Isaac Rankin -- 11115722 -- January 30, 2026
+\end{center}
+
+
+\vspace{2cm}
+
+
+<<load_and_setup, include=FALSE>>=
+# Clean up the environment
+rm(list = ls())
+
+# Set the directory
+setwd("~/Desktop/UBC PhD/STAT 547D/Homework")
+
+# We require a folder `models` with the two ODEs for exercise 1
+
+# Set a seed
+set.seed(547)
+
+# How many cores? 8
+parallel::detectCores()
+
+# Use, say, half of them
+options(mc.cores = 4)
+
+# Set 3 decimals for output
+options(digits = 3) 
+
+# Load libraries
+library(tidyverse)
+library(cmdstanr)
+library(posterior)
+library(bayesplot)
+library(loo)
+library(knitr)
+
+# Set CmdStan path
+set_cmdstan_path("/Users/isaacrankin/CmdStan/cmdstan-2.37.0")
+
+@
+
+
+
+\section*{Exercise 1: pharmacokinetic model}
+% Helpful guides
+% https://mc-stan.org/cmdstanr/articles/cmdstanr.html
+% https://bob-carpenter.github.io/stan-getting-started/stan-getting-started.html
+% https://github.com/stan-dev/rstan/wiki/Rstan-Getting-Started
+
+% Charles' guides
+% https://github.com/charlesm93/stanTutorial
+% https://github.com/charlesm93/stat547-Bayesian_workflow/blob/main/influenza/infleunza.r
+% https://github.com/charlesm93/stat547-Bayesian_workflow/blob/main/influenza/model/sir_poisson.stan
+% https://github.com/charlesm93/stat547-Bayesian_workflow/blob/main/influenza/model/sir_demo.stan
+
+\subsection*{(a) Implement the one compartment model in Stan}
+Our goal is to understand how quickly a drug compound is absorbed and cleared from the patient’s body.
+At time $t=0$, the patient receives a drug dose of 1200mg
+We have the drug concentration y (mg/L) over time t (hours).
+
+<<data_ex1>>=
+
+y <- c(3.79, 5.80, 12.79, 15.52, 9.98, 18.65, 13.21, 13.91, 8.16, 4.81, 4.59, 2.23)
+t <- c(0.083, 0.167, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8)
+
+@
+
+
+
+We can see the concentration over time.
+
+<<plot_eda_1a, warning=FALSE, fig.width=6, fig.height=3, echo=FALSE>>=
+
+df <- tibble(time = t, concentration = y)
+ggplot(df, aes(x = time, y = concentration)) +
+  geom_point(size = 3, color = "#00547D") +
+  geom_line(alpha = 0.3) +
+  labs(
+    x = "Time (hours)", 
+    y = "Drug Concentration (mg/L)",
+    title = "Observed Drug Concentration over Time"
+    ) +
+  theme_bw()
+
+@
+
+
+
+Now we have to put the data in the format to pass to the Stan file.
+Note that, according to Wikipedia, pharmacokinetics is sometimes abbreviated as PK, thus the Stan file names.
+
+<<data_setup_1a, echo=FALSE>>=
+# Put the data in a list with initial conditions
+# u(t) = (u_gut(t), u_cent(t))
+# Initial conditions: u(0) = (1200, 0)
+data_one_compartment <- list(
+  n_obs = length(y),
+  t = t,
+  y = y,
+  t0 = 0,
+  u0 = c(1200, 0)
+  )
+
+# Transpile the one compartment model
+model_one_compartment <- cmdstan_model("model/pk_one_compartment_model.stan")
+
+@
+
+See my \href{https://github.com/1saacRankin/STAT-547D-Bayesian-Workflow-Assignment}{GitHub} for this Rnw file to generate this homework submission and to see the one and two compartment models.
+
+Note: I will only show the key code, not all the manipulation and plotting code.
+
+
+\subsection*{(b) Fit the model, check the quality of the inference (convergence, eﬀective sample size), and perform posterior predictive checks.}
+
+First, I have to fit the one compartment model.
+
+<<fit_model_1b, results='hide', warning=FALSE, message=FALSE>>=
+
+# ?cmdstanr::sample
+fit_one_compartment_model <- model_one_compartment$sample(
+  data = data_one_compartment,
+  seed = 547,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 1000,
+  save_warmup = TRUE
+  )
+
+@
+
+
+Following the influenza example we saw in class, we will do some diagnostics.
+
+Check the convergence and effective sample size.
+
+<<rhat_ess_1b, warning=FALSE, echo=FALSE>>=
+
+fit_one_compartment_model$summary(variables = c("k_a", "CL", "V_cent", "sigma")) %>% kable(., digits = 5)
+
+@
+
+For all parameters, $\shR < 1.01$ and both ESSs are $> 1100$.
+These diagnostics raise no concern.
+
+
+Trace plots for each parameter:
+
+<<trace_1b, warning=FALSE, fig.width=6, fig.height=3, echo=FALSE>>=
+
+bayesplot::mcmc_trace(
+  fit_one_compartment_model$draws(inc_warmup = TRUE),
+  n_warmup = 1000, 
+  pars = c("k_a", "CL", "V_cent", "sigma")
+  )
+
+@
+
+These trace plots look like fuzzy caterpillars without systematic patterns, they raise no concern.
+
+Density plots for each parameter:
+
+<<density_1b, warning=FALSE, fig.width=6, fig.height=3, echo=FALSE>>=
+
+draws <- fit_one_compartment_model$draws()
+bayesplot::mcmc_dens_overlay(draws, pars = c("k_a", "CL", "V_cent", "sigma"))
+
+@
+
+The four chains are in general agreement, again raising no concerns.
+Of course the means of these density plots appear consistent with the table we saw earlier.
+
+Now we'll look at the posterior predictions.
+
+<<predictions_1b, warning=FALSE, fig.width=6, fig.height=3, echo=FALSE>>=
+
+# ?bayesplot::ppc_ribbon
+y_predictions_1_component <- as.matrix(
+  as_draws_df(fit_one_compartment_model$draws(variables = c("y_pred")))
+  )[, -(13:15)]
+
+bayesplot::ppc_ribbon(
+  y = data_one_compartment$y, yrep = y_predictions_1_component,
+  x = data_one_compartment$t, y_draw = "point"
+  ) + 
+  xlab("Time (hours)") +
+  ylab("Drug Concentration (mg/L)") +
+  theme_bw()
+
+@
+
+The inner ribbon shows a 0.50 interval, and the outer ribbon shows a 0.90 interval.
+Out of the 12 observed points, it appears as if 9 are inside the inner ribbon and 12 are inside the outer ribbon, suggesting that the ribbons may be slightly cautious.
+
+
+\subsection*{(c) Implement a more sophisticated model, perform posterior predictive checks, and compare the two models using approximate leave-one-out cross-valiadation}
+
+See my \href{https://github.com/1saacRankin/STAT-547D-Bayesian-Workflow-Assignment}{GitHub} for the Stan file for the two compartment model.
+
+First, setup the data, transpile the model, and fit the model.
+
+<<data_setup_1c, results='hide', warning=FALSE, message=FALSE, echo=FALSE>>=
+
+# u(t) = (u_gut(t), u_cent(t), u_peri(t))
+# Initial conditions: u(0) = (1200, 0, 0)
+data_two_compartment <- list(
+  n_obs = length(y),
+  t = t,
+  y = y,
+  t0 = 0,
+  u0 = c(1200, 0, 0)
+)
+
+# Transpile the two compartment model
+model_two_compartment <- cmdstan_model("model/pk_two_compartment_model.stan")
+
+# Fit the model
+fit_two_compartment_model <- model_two_compartment$sample(
+  data = data_two_compartment,
+  seed = 547,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 1000,
+  iter_sampling = 1000,
+  save_warmup = TRUE
+)
+
+@
+
+
+Check the convergence and effective sample size.
+
+<<rhat_ess_1c, warning=FALSE, echo=FALSE>>=
+
+fit_two_compartment_model$summary(
+  variables = c("k_a", "CL", "V_cent", "Q", "V_peri", "sigma")
+  ) %>% kable()
+
+@
+
+For all parameters, $\shR < 1.01$ and both ESSs are $> 1700$.
+These diagnostics raise no concern.
+
+
+Trace plots for each parameter:
+
+<<trace_1c, warning=FALSE, fig.width=6, fig.height=3, echo=FALSE>>=
+
+bayesplot::mcmc_trace(
+  fit_two_compartment_model$draws(inc_warmup = TRUE),
+  n_warmup = 1000, 
+  pars = c("k_a", "CL", "V_cent", "Q", "V_peri", "sigma")
+  )
+
+@
+
+These trace plots look like fuzzy caterpillars. There are a few spikes in the trace plots for $k_a$, $Q$, and $V_{peri}$, but all in all, minimal concern.
+
+Density plots for each parameter:
+
+<<density_1c, warning=FALSE, fig.width=6, fig.height=3, echo=FALSE>>=
+
+draws <- fit_two_compartment_model$draws()
+bayesplot::mcmc_dens_overlay(
+  draws, 
+  pars = c("k_a", "CL", "V_cent", "Q", "V_peri", "sigma")
+  )
+
+@
+
+The four chains are in general agreement. The means, median, and standard deviations are in agreement with the table shown before.
+
+
+Now the posterior prediction plot:
+
+<<predictions_1c, warning=FALSE, fig.width=6, fig.height=3, echo=FALSE>>=
+
+# ?bayesplot::ppc_ribbon
+y_predictions_2_component <- as.matrix(
+  as_draws_df(fit_two_compartment_model$draws(variables = c("y_pred")))
+  )[, -(13:15)]
+
+bayesplot::ppc_ribbon(
+  y = data_one_compartment$y, yrep = y_predictions_2_component,
+  x = data_one_compartment$t, y_draw = "point"
+  ) + 
+  xlab("Time (hours)") +
+  ylab("Drug Concentration (mg/L)") +
+  theme_bw()
+
+@
+
+Again, similar to the one component model, out of the 12 observed points, 9 are inside the inner ribbon and 12 are inside the outer ribbon, suggesting that the ribbons may be slightly cautious.
+
+
+
+
+Now, compare the approximate leave-one-out cross-validation results for the two models.
+
+The 1 component model: 
+
+<<loo_1component, warning=FALSE, echo=FALSE>>=
+
+log_lik_1_component <- fit_one_compartment_model$draws("log_lik")
+loo_estimate_1_component <- loo(log_lik_1_component, r_eff = relative_eff(log_lik_1_component))
+print(loo_estimate_1_component)
+
+@
+
+The 2 component model: 
+
+<<loo_2component, warning=FALSE, echo=FALSE>>=
+
+log_lik_2_component <- fit_two_compartment_model$draws("log_lik")
+loo_estimate_2_component <- loo(log_lik_2_component, r_eff = relative_eff(log_lik_2_component))
+print(loo_estimate_2_component)
+
+@
+
+
+And compare the LOOCVs for the two models:
+
+<<loo_comparison, echo=FALSE>>=
+#?loo_compare
+loo_compare(loo_estimate_1_component, loo_estimate_2_component)
+@
+
+We want larger epld. Model 2 is slightly preferred. Model 1 is 1.4 units of elpd worse, but the standard error is 1.8, so this difference is not statistically significant.
+Both models have `All Pareto k estimates are good` notices.
+
+
+
+
+
+
+
+
+
+
+
+
+\newpage
+\section*{Exercise 2: Hamiltonian Monte Carlo}
+
+\subsection*{(a) Write a function that runs “static” HMC.}
+We want to write an HMC algorithm.
+At each iteration, simulate a Hamiltonian trajectory using a leapfrog integrator with $L$ steps of size $\epsilon$.
+The proposal is then accepted or rejected via a Metropolis procedure.
+Set the mass matrix to the identity, that is, $M = I$.
+The output of the function is MCMC samples.
+
+Here is the implementation on the static HMC algorithm.
+Note that the second leapfrog gradient could be used as the first gradient in the next step.
+This implementation could be optimized. This section I'll show more code than the other sections.
+
+<<HMC_2a>>=
+
+static_HMC <- function(
+    log_p,                                   # Target's unnormalized log density
+    grad_log_p,                           # Gradient of the target's log density
+    theta0,                                        # Starting point of the chain
+    n_iter,                                          # Number of MCMC iterations
+    eps,                                  # Step size of the leapfrog integrator
+    L                                   # Number of leapfrog steps per iteration
+    ) {
+  
+  # Dimension of the target density
+  d <- length(theta0)
+  
+  # Store samples (rows are iterations, columns are dimensions)
+  samples <- matrix(0, nrow = n_iter, ncol = d)
+  
+  # Initialize the position of the chain at the given starting point
+  theta <- theta0
+  
+  # Counter of number of accepted proposals
+  n_accept <- 0
+  
+  # Make n_iter proposals, some of which will be rejected
+  for (i in 1:n_iter) {
+    
+    # Sample momentum
+    # We need a d-dimensional momentum. 
+    # So, sample d times from a univariate Gaussian
+    rho <- rnorm(d, mean = 0, sd = 1)
+    
+    # Save the position-momentum pair from before this iteration
+    current_theta <- theta
+    current_p <- rho
+    
+    # Current Hamiltonian: -log(position) + (1/2) momentum^T momentum
+    current_H <- -log_p(current_theta) + sum(current_p^2)/2
+    
+    
+    
+    # Make intermediate position and momentum for this iteration
+    theta <- current_theta
+    p <- current_p
+    
+    # Leapfrog integrator
+    # See the top of page 6 in the notes for lecture 4
+    for (j in 1:L) {
+      p <- p + (eps/2) * grad_log_p(theta)
+      theta <- theta + eps * p
+      p <- p + (eps/2) * grad_log_p(theta)
+    }
+    
+    # Switch the direction of the momentum
+    p <- -p
+    
+    
+    
+    # Proposed Hamiltonian
+    proposed_H <- -log_p(theta) + sum(p^2)/2
+    
+    
+    
+    # Metropolis acceptance
+    a <- min(1, exp(-proposed_H + current_H))
+    u <- runif(1, min = 0, max = 1) 
+    
+    # Make accept/reject decision
+    if (u < a){
+      n_accept <- n_accept + 1
+    }else{
+      # If we reject, revert to the position at the beginning of the trajectory
+      theta <- current_theta
+    }
+    
+    # Save the samples in the ith row
+    samples[i, ] <- theta
+  }
+  
+  # Print the acceptance rate and return the samples
+  cat("The acceptance rate is: ", n_accept / n_iter, "\n")
+  samples
+}
+
+
+@
+
+
+
+Now, test this function on a univariate standard normal.
+
+<<hmc_std_normal>>=
+
+# The Gaussian has density ( 1/sqrt(2pi) ) exp( (-1/2)( (x-mu) / sigma)^2 )
+# When mu = 0 and sigma = 1, the log-density is proportional to:
+log_p_1d_Gaussian <- function(x){
+  -(1/2) * x^2
+}
+
+# And so the gradient of the log-density is:
+grad_log_p_1d_Gaussian <- function(x){
+  -x
+}
+
+# Run my HMC sampler
+samples_1d_Gaussian <- static_HMC(
+  log_p = log_p_1d_Gaussian, 
+  grad_log_p = grad_log_p_1d_Gaussian, 
+  theta0 = 0, 
+  n_iter = 2000, 
+  eps = 0.2, 
+  L = 5
+  )
+
+
+@
+
+My sampler appears to be working.
+
+Now, check the sample mean and variance, compare to the true values, and plot the chain.
+
+<<std_normal_plots_2a, warning=FALSE, message=FALSE, fig.width=6, fig.height=3>>=
+
+cat("Mean:", mean(samples_1d_Gaussian), "(True value: 0)")
+cat("Variance:", var(samples_1d_Gaussian), "(True value: 1)")
+
+std_normal_samples <- data.frame(
+  iteration = 1:length(samples_1d_Gaussian), 
+  theta = as.vector(samples_1d_Gaussian)
+  )
+
+ggplot(std_normal_samples, aes(x = iteration, y = theta)) +
+  geom_line(col = "#00547D", linewidth = 0.5) +
+  geom_hline(yintercept = 0, col = "#D547DD", linetype = "dashed", linewidth = 1) +
+  labs(title = "Trace Plot of Univariate Standard Normal",
+       x = "Iteration", y = "theta") +
+  theme_minimal()
+
+ggplot(std_normal_samples, aes(x = theta)) +
+  geom_histogram(aes(y = after_stat(density)), 
+       bins = 50, fill = "#00547D", alpha = 0.5, col = "#FFFFFF") +
+  stat_function(fun = dnorm, args = list(mean = 0, sd = 1),
+                col = "#D547DD", linewidth = 1) +
+  labs(title = "Density of Univariate Standard Normal",
+       x = "theta",y = "Density") +
+  theme_minimal()
+
+
+@
+
+It appears as if the static HMC algorithm is working as desired.
+The sample mean and variances are close to the true values.
+In the trace plot, there may be a slight oscillation, but it may be due to the choice of step size and chain length.
+The histogram of the samples looks like the true target density.
+
+
+\subsection*{(b) 5-dimensional Gaussian target}
+
+<<mvn_2b>>=
+
+# Define the provided covariance matrix
+Sigma <- matrix(
+  c(
+   2.82,   2.71,  0.180,  2.42,  -1.87,
+   2.71,   7.35, -4.02,  -1.17,  -1.05,
+   0.180, -4.02,  8.85,   1.64,   3.81,
+   2.42,  -1.17,  1.64,   5.94,  -3.95,
+  -1.87,  -1.05,  3.81,  -3.95,   6.40
+  ), 
+  nrow = 5, 
+  ncol = 5, 
+  byrow = TRUE
+  )
+
+# Set the mean at the origin
+mu <- c(0, 0, 0, 0, 0)
+
+# Find the inverse of the covariance matrix
+Sigma_inverse <- solve(Sigma)
+
+# Find the unnormalised log-density
+log_p_mvn <- function(theta){
+  -(1/2) * t(theta) %*% Sigma_inverse %*% theta
+  } 
+
+# Find the gradient of the multivariate normal
+grad_log_p_mvn <- function(theta) {
+  -Sigma_inverse %*% theta
+  }
+
+@
+
+Now run the HMC sampler with the desired hyperparameters.
+
+<<run_2b>>=
+# Set a starting position
+theta0 <- c(-2, -1, 0, 1, 2)
+
+# Run the algorithm with the desired arguments
+samples_5_Gaussian <- static_HMC(
+  log_p = log_p_mvn, 
+  grad_log_p = grad_log_p_mvn, 
+  theta0 = theta0, 
+  n_iter = 1000, 
+  eps = 0.05, 
+  L = 10
+  )
+
+@
+
+Discard the first half of the samples as this was the warm up.
+Print out the desired quantities (per dimension I suppose).
+
+<<summary_posterior_2b, echo=FALSE>>=
+# Discard the warmup (first half of samples) and 
+kept_samples <- as_draws_matrix(samples_5_Gaussian[501:1000, ])
+colnames(kept_samples) <- paste0("theta", 1:5)
+
+# Examples have the quantiles
+# ?posterior::summarise_draws
+posterior::summarise_draws(
+  kept_samples,
+  ~quantile(.x, probs = 0.05), 
+  mean, 
+  median, 
+  ~quantile(.x, probs = 0.95),
+  sd
+  ) %>% kable()
+
+@
+
+The means are farther from the true mean (the origin) than I expected. When squaring the standard deviations in the table, they are similar but not incredibly close to the marginal variances in the true covariance matrix.
+
+\subsection*{(c) Report $\shR$ and ESS. Show the trace plots and density plots.}
+
+<<part_2c, echo=FALSE, results='hide'>>=
+
+# Run 4 chains of length 1000
+n_chains <- 4
+n_iter <- 1000
+
+# Save all the chains in this list
+all_chains <- list()
+
+# Loop through the 4 chains
+for (c in 1:n_chains) {
+  
+  # Set a seed for this chain
+  set.seed(547 + c)
+  
+  # Get a random starting location
+  # It's a bit goofy sampling from a 5-dimensional Gaussian to sample from a 5-dimensional Gaussian
+  theta0 <- rnorm(5)
+  
+  # Get the samples from this chain
+  samples <- static_HMC(log_p_mvn, grad_log_p_mvn, theta0, n_iter, 0.05, 10)
+  
+  # Give the columns readable names
+  colnames(samples) <- paste0("theta", 1:5)
+  
+  # Save the samples form this chain in the list initialized before
+  # Only save the second half as the first half is a warmup
+  # Slightly janky to not use n_iter here
+  all_chains[[c]] <- samples
+}
+
+# Convert to a posterior draws object
+# ?posterior::as_draws_array
+draws <- as_draws_array(all_chains)
+
+@
+
+
+<<ex2c_outputs, echo=FALSE,  fig.width=6, fig.height=3>>=
+# Summary table
+kable(summarise_draws(draws))
+
+# Trace plot
+bayesplot::mcmc_trace(draws)
+
+# Density plot
+bayesplot::mcmc_dens_overlay(draws)
+@
+
+
+The $\shR$s are much larger than 1.01 and the ESSs are fairly small considering the length of the chains.
+The trace plots show lots of drifting. The density plots are wildly different between chains.
+
+
+\subsection*{(d) Plot the squared error of the Monte Carlo estimate of the mean for the
+first dimension as a function of the total length of the Markov chains. Similarly for the second moment.}
+
+<<squared_error_2d, echo=FALSE>>=
+
+# Take last 500 samples from each chain (discard first half as that is the warmup)
+# So, 2000 samples
+# Initialize empty matrix.
+# Each of the 2000 columns is a sample in 5-dimensions
+all_samples <- matrix(0, nrow = 2000, ncol = 5)
+
+# Fill the matrix
+for (i in 1:n_chains) {
+  # Chain 1: 1:500, Chain 2: 501:1000, Chain 3: 1001:1500, Chain 4: 1501:2000
+  start_row <- (i - 1) * 500 + 1
+  end_row <- i * 500
+  # Take samples from `draws` from part (c)
+  all_samples[start_row:end_row, ] <- as.matrix(draws[501:1000, i, ])
+}
+
+# Now we have 2000 samples
+# Compute estimator at: 50, 100, 150, ..., 1950, 2000
+lengths <- seq(50, 2000, by = 50)
+
+# E(x_1) = 0
+true_mean <- 0
+# V(x_1) = E(x_1^2) - E(x_1)^2 = E(x_1^2) - 0 = E(x_1^2)
+# So the second moment of the first dimension is the variance in the first dimension
+true_second_moment <- 2.82
+
+# Initialize storage for Monte Carlo estimates
+mean_errors <- numeric(length(lengths))
+second_moment_errors <- numeric(length(lengths))
+
+# Compute estimates for the first n samples for n in seq(50, 2000, by = 50)
+for (j in 1:length(lengths)) {
+  
+  # First n samples
+  n <- lengths[j]
+  
+  # First dimension, keep first n samples
+  samples_subset <- all_samples[1:n, 1]
+  
+  # Compute estimates of the first and second moments
+  mean_est <- mean(samples_subset)
+  second_moment_est <- mean(samples_subset^2)
+  
+  # Compute the squared error of the estimate
+  mean_errors[j] <- (mean_est - true_mean)^2
+  second_moment_errors[j] <- (second_moment_est - true_second_moment)^2
+}
+
+@
+
+
+<<squared_error_2d_plots, warning=FALSE, message=FALSE, fig.width=6, fig.height=3, echo=FALSE>>=
+
+ggplot(
+  data.frame(chain_length = lengths, squared_error = mean_errors), 
+  aes(x = chain_length, y = squared_error)
+  ) +
+  geom_point(col = "#00547D", size = 2.5) +
+  geom_line(col = "#00547D", linewidth = 0.8) +
+  labs(title = "Monte Carlo Error for the Mean of the First Dimension",
+       x = "Chain Length", y = "Squared Error") +
+  theme_minimal()
+
+ggplot(
+  data.frame(chain_length = lengths, squared_error = second_moment_errors), 
+  aes(x = chain_length, y = squared_error)
+  ) +
+  geom_point(col = "#00547D", size = 2.5) +
+  geom_line(col = "#00547D", linewidth = 0.8) +
+  labs(title = "Monte Carlo Error for the Second Moment of the First Dimension",
+       x = "Chain Length", y = "Squared Error") +
+  theme_minimal()
+
+@
+
+
+I computed the squared error using the first 50, 100, 150, ..., 1950, and 2000 samples of the chain.
+Unsurprisingly, the longer the chain, the (generally) less error.
+For the first moment, there appears to be a small hump around 1500 samples.
+I am surprised by how large the squared errors are for short chain lengths.
+
+
+
+\subsection*{(e) We will now experiment with diﬀerent trajectory lengths.}
+
+Hoffman \textit{et al.} prescribe $L^* \epsilon = \lfloor 2.25 \max_i \sqrt{\Sigma_{ii}} \rfloor$.
+For $L = 10, L^*, 80$, report $\shR$, ESS, and ESS per gradient evaluation.
+We still have $\epsilon = 0.05$.
+
+<<part2e, echo=FALSE, message=FALSE, warning=FALSE, include=FALSE>>=
+
+# Epsilon is 0.05
+eps <- 0.05
+
+# Find largest diagonal component 
+max_sqrt_variance <- max(sqrt(diag(Sigma)))
+
+# I suppose the epsilon should go into the floor function when solving for L^*
+L_star <- floor(2.25 * max_sqrt_variance / eps)
+cat("L* =", L_star, "\n")
+
+# Try the three values of L
+L_values <- c(10, 80, L_star)
+
+# Initialize an empty list to store results
+results_list <- list()
+
+# Loop through the L values
+for (L in L_values) {
+  
+  # Which L
+  cat("L =", L, "\n")
+  
+  # Store the chains
+  chains <- list()
+  
+  # Run 4 chains
+  for (c in 1:4) {
+    
+    # Consistent seeds for all Ls but change between chains
+    set.seed(547 + c)
+    
+    # Starting position
+    theta0 <- rnorm(5)
+    
+    # Run a chain
+    samples <- static_HMC(log_p_mvn, grad_log_p_mvn, theta0, 1000, eps, L)
+    
+    # Better column names
+    colnames(samples) <- paste0("theta", 1:5)
+    
+    # Save the samples
+    chains[[c]] <- samples
+  }
+  
+  # Convert to posterior draws object
+  draws <- as_draws_array(chains)
+  
+  # Use the posterior summarise function
+  summary_L <- summarise_draws(draws)
+  
+  # Find max Rhat and min ESS (worst performances)
+  max_rhat <- max(summary_L$rhat)
+  min_ess <- min(summary_L$ess_bulk)
+  
+  # 4 chains of length 1000 samples
+  # My function computes 2L gradients per sample, but one could use L
+  number_of_gradients <- 4 * 1000 * (2 * L)
+  
+  # Could multiply by 2 when reusing gradients
+  ess_per_gradient <- min_ess / number_of_gradients
+  
+  # Stats for this L
+  results_list[[as.character(L)]] <- list(
+    L = L,
+    max_rhat = max_rhat,
+    min_ess = min_ess,
+    ess_per_gradient = ess_per_gradient,
+    number_of_gradients = number_of_gradients
+  )
+}
+
+# Make a nice table
+results_df <- do.call(rbind, lapply(results_list, function(x) {
+  data.frame(
+    L = x$L,
+    "Max Rhat" = x$max_rhat,
+    "Min ESS" = x$min_ess,
+    "Total Number of Gradients" = x$number_of_gradients,
+    "ESS per Gradient" = x$ess_per_gradient
+  )}))
+rownames(results_df) <- NULL
+
+@
+
+
+<<ex2e_table, echo=FALSE>>=
+# Show the table with more decimals
+kable(results_df, digits = 5)
+@
+
+Wow, $L^*$ does have the largest ESS per gradient, much better ESS, and the best $\shR$.
+I should read Hoffman's justification.
+
+
+
+\subsection*{(f) Explore jittering L}
+
+First, we have to update the HMC function.
+I suppose I shouldn't call it static anymore... still, it's the jittered version of the static HMC algorithm from before.
+
+<<HMC_2f_jitter>>=
+
+# Make a jitter HMC algorithm
+static_HMC_jitter <- function(
+    log_p,
+    grad_log_p,
+    theta0,
+    n_iter,
+    eps,
+    L_max # Give the largest L
+    ) {
+  
+  # Dimension of the target density
+  d <- length(theta0)
+  
+  # Store samples (rows are iterations, columns are dimensions)
+  samples <- matrix(0, n_iter, d)
+  
+  # Initialize the position of the chain at the given starting point
+  theta <- theta0
+  
+  # Counters of the number of accpeted proposals and of gradients required
+  n_accept <- 0
+  total_gradients <- 0
+  
+  # Make n_iter proposals, some of which will be rejected
+  for (i in 1:n_iter) {
+    
+    # Sample uniformly a trajectory length
+    L <- sample(1:L_max, 1)
+    
+    # Sample momentum
+    rho <- rnorm(d)
+    
+    # Save the position-momentum pair from before this iteration
+    current_p <- rho
+    current_theta <- theta
+    
+    # Current Hamiltonian: -log(position) + (1/2) momentum^T momentum
+    current_H <- -log_p(current_theta) + sum(current_p^2)/2
+    
+    # Make intermediate position and momentum for this iteration
+    theta <- current_theta
+    p <- current_p
+    
+    # Leapfrog integrator
+    for (j in 1:L) {
+      
+      # Half momentum update
+      p <- p + 0.5 * eps * grad_log_p(theta)
+      
+      # Add a gradient evaluation
+      total_gradients <- total_gradients + 1
+      
+      # Full position update
+      theta <- theta + eps * p
+      
+      # Half momentum update
+      p <- p + 0.5 * eps * grad_log_p(theta)
+      
+      # Add a gradient evaluation
+      total_gradients <- total_gradients + 1
+      # I could reuse this gradient as the first gradient next step, next time
+    }
+    
+    # Switch the direction of the momentum
+    p <- -p
+    
+    # Proposed Hamiltonian
+    proposed_H <- -log_p(theta) + sum(p^2)/2
+    
+    
+    # Metropolis acceptance
+    a <- min(1, exp(-proposed_H + current_H))
+    u <- runif(1, min = 0, max = 1)
+    
+    
+    # Make accept/reject decision
+    if (u < a){
+      n_accept <- n_accept + 1
+    }else{
+        # If we reject, revert to the position at the beginning of the trajectory
+      theta <- current_theta
+    }
+    
+    # Save the samples in the ith row
+    samples[i, ] <- theta
+  }
+  
+  # Print the acceptance rate and return the samples and the number of gradients
+  cat("The acceptance rate is: ", n_accept / n_iter, "\n")
+  list(samples = samples, total_gradients = total_gradients)
+}
+
+
+@
+
+
+Now we can compare the regular and jittered trajectory lengths.
+
+<<part2f_use_jittered_hmc_grad, include=FALSE>>=
+
+# Store the samples from each chain
+chains <- list()
+
+# Each chain has a different number of gradients, sum over all 4 chains
+total_grads_all <- 0
+
+# Run 4 chains
+for (c in 1:4) {
+  
+  # Seed for each chain
+  set.seed(547 + c)
+  
+  # Initial position
+  theta0 <- rnorm(5)
+  
+  # Run jittered HMC
+  result <- static_HMC_jitter(log_p_mvn, grad_log_p_mvn, theta0, 1000, 0.05, L_star)
+  
+  # Rename columns
+  colnames(result$samples) <- paste0("theta", 1:5)
+  
+  # Save the samples
+  chains[[c]] <- result$samples
+  
+  # Add the number of gradients for this chain to the total for all chains
+  total_grads_all <- total_grads_all + result$total_gradients
+}
+
+
+
+# Make it a posterior draws object
+draws <- as_draws_array(chains)
+
+# Make a table of stats for each of the 5 dimensions
+summary_table <- summarise_draws(draws)
+
+# Find the largest (worst) R hat
+max_rhat <- max(summary_table$rhat)
+
+# Find the min (worst) ESS (bulk)
+min_ess <- min(summary_table$ess_bulk)
+
+# Find the min ESS per gradient computed (multiply by 2 for an efficient implementation)
+ess_per_grad <- min_ess / total_grads_all
+
+
+@
+
+
+<<ex2f_output, echo=FALSE, message=FALSE>>=
+# Tell me the results
+kable(summary_table, digits = 5)
+# cat("Jittered HMC Max Rhat:", max_rhat, "\n")
+# cat("Jittered HMC Min ESS:", min_ess, "\n")
+# cat("Jittered HMC ESS per gradient:", ess_per_grad, "\n")
+@
+
+The worst (maximum) $\shR$ for a dimension is \Sexpr{round(max_rhat)}. The worst (minimum) ESS for a dimension is \Sexpr{min_ess}.
+The ESS per gradient evaluation is \Sexpr{ess_per_grad}. $\shR$ is comparable to that using Hoffman's recomended trajectory length.
+However, ESS and ESS per gradient using the jittered HMC algorithm are not as good as when always using the Hoffman trajectory length for this sampling problem.
+
+
+
+
+
+
+
+\newpage
+\section*{Exercise 3: variational inference}
+
+We will use VI to approximate a non-factorized Gaussian with a factorized Gaussian.
+
+Let $p$ be a non-factorized Gaussian over $\reals^d$ with mean $\mu$ and covariance matrix $\Sigma$.
+\[
+    p(z) = (2 \pi)^{-\frac{d}{2}} | \Sigma |^{-\frac{1}{2}} \exp \lt( -\frac{1}{2} (z - \mu)^T \Sigma^{-1} (z - \mu)\rt)
+\]
+
+Let $\scQ$ be the set of all Gaussians with mean $\nu \in \reals^d$ and diagonal covariance matrix $\Psi \in \reals^{d \times d}$.
+\[
+    q_{\nu, \Psi}(z) = (2 \pi)^{-\frac{d}{2}} | \Psi |^{-\frac{1}{2}} \exp \lt( -\frac{1}{2} (z - \nu)^T \Psi^{-1} (z - \nu)\rt)
+\]
+
+We aim to choose $\nu$ and $\Psi$ to minimize the reverse Kullback-Leibler divergence.
+\[
+    \KL(q \; || \; p) = \int (\log q(z) - \log p(z)) \; q(z) \; dz
+\]
+
+
+
+\subsection*{(a)}
+We want to show that $\KL(q \; || \; p) \geq 0$ and that $\KL(q \; || \; p) = 0$ if and only if $p = q$.
+
+\underline{\textit{proof}}
+
+This proof relies on Jensen's inequality.
+As $\log(x)$ is strictly concave, we have $\E(\log(x)) \leq \log\lt( \E(x) \rt)$ with equality if and only if $x = c$ for some constant $c \in \reals_+$.
+Therefore, $-\E(\log(x)) \geq -\log\lt( \E(x) \rt) = \log\lt( \frac{1}{\E(x)} \rt)$.
+\[
+    \KL(q \; || \; p)
+    & = \int (\log q(z) - \log p(z)) \; q(z) \; dz                 \\
+    & = \int \log \lt( \frac{q(z)}{p(z)} \rt)  \; q(z) \; dz       \\
+    & = \E_q \left[ \log \frac{q(z)}{p(z)} \right]                 \\
+    & = -\E_q \left[ \log \frac{p(z)}{q(z)} \right]                \\
+    & \geq - \log \E_q \left[ \frac{p(z)}{q(z)} \right]            \\
+    & = - \log \int \frac{p(z)}{q(z)} \; q(z) \; dz                \\
+    & = - \log \int p(z) \; dz                                     \\
+    & = - \log(1)                                                  \\
+    & = 0
+\]
+
+As $-\log(x)$ is strictly convex, we can use a result from Trevor's STAT 547C Probability class that says that this inequality is an equality if and only if $\frac{p(z)}{q(z)} = c$ almost surely.
+Now suppose $\frac{p(z)}{q(z)} = c$ almost surely.
+As $p$ and $q$ are probability densities we have $\int p(z) \; dz = \int q(z) \; dz = 1$.
+Then
+\[
+    -\E_q \left[ \log \frac{p(z)}{q(z)} \right]
+    & = - \log \E_q \left[ \frac{p(z)}{q(z)} \right]            \\
+    & = - \log \int \frac{p(z)}{q(z)} \; q(z) \; dz                \\
+    & = - \log \int p(z) \; dz                                     \\
+    & = - \log(1)                                                  \\
+    & = 0
+\]
+Therefore, we have that $\KL(q \; || \; p) \geq 0$ with equality if and only if $\frac{p(z)}{q(z)} = c$ almost surely.
+
+
+
+\subsection*{(b)}
+Suppose we have densities $p(z) = \Norm(z; \mu, \Sigma)$ and $q(z) = \Norm(z; \nu, \Psi)$ over $\reals^d$ where $\Psi = \text{diag}(\psi_1, \psi_2, \ldots, \psi_d)$ is a diagonal covariance matrix.
+We want to find an expression for $\KL(q \; || \; p)$.
+
+First, we write out their log-densities:
+\[
+    \log q(z) = -\frac{d}{2} \log(2 \pi) - \frac{1}{2} \log|\Psi| - \frac{1}{2}(z - \nu)^T \Psi^{-1} (z - \nu)
+\]
+\[
+    \log p(z) = -\frac{d}{2} \log(2 \pi) - \frac{1}{2} \log|\Sigma| - \frac{1}{2}(z - \mu)^T \Sigma^{-1} (z - \mu)
+\]
+
+So their difference is:
+\[
+    \log q(z) - \log p(z) =  -\frac{1}{2} \log |\Psi| + \frac{1}{2} \log |\Sigma| - \frac{1}{2} (z - \nu)^T \Psi^{-1} (z - \nu) + \frac{1}{2}(z - \mu)^T \Sigma^{-1} (z - \mu)
+\]
+
+Therefore, using $\int q(z) \; dz = 1$, the $\KL$ divergence becomes:
+\[
+    \KL(q \; || \; p)
+    & = \int (\log q(z) - \log p(z)) \; q(z) \; dz  \\
+    & = \int \lt( -\frac{1}{2} \log |\Psi| + \frac{1}{2} \log |\Sigma|  -\frac{1}{2} (z - \nu)^T \Psi^{-1} (z - \nu) + \frac{1}{2}(z - \mu)^T \Sigma^{-1} (z - \mu) \rt) \; q(z) \; dz \\
+    & = -\frac{1}{2} \log |\Psi| + \frac{1}{2} \log |\Sigma| - \frac{1}{2} \E_q\lt[(z - \nu)^T \Psi^{-1} (z - \nu)\rt] + \frac{1}{2}\E_q\lt[(z - \mu)^T \Sigma^{-1}(z - \mu)\rt]
+\]
+
+Now we compute each of the two expectations.
+
+
+We now rely on the following identity:
+
+For $x \sim \Norm(m, \Sigma)$, where $\E(x) = m$ and $m'$ is any vector in $\reals^d$, we have (\href{https://www.math.uwaterloo.ca/~hwolkowi/matrixcookbook.pdf}{Matrix Cookbook}, identity 380):
+\[
+    \E\lt[(x - m')^T A(x - m')\rt] = (m - m')^T A(m - m') + \text{tr}(A\Sigma)
+\]
+
+For the first expectation, we apply this with $x = z \sim \Norm(\nu, \Psi)$, $m = \nu$, $m' = \nu$, and $A = \Psi^{-1}$:
+\[
+    \E_q\lt[(z - \nu)^T \Psi^{-1} (z - \nu)\rt] = (\nu - \nu)^T \Psi^{-1}(\nu - \nu) + \text{tr}(\Psi^{-1}\Psi) = 0 + \text{tr}(I) = d
+\]
+
+For the second expectation, we use $x = z \sim \Norm(\nu, \Psi)$, $m = \nu$, $m' = \mu$, and $A = \Sigma^{-1}$:
+\[
+    \E_q\lt[(z - \mu)^T \Sigma^{-1}(z - \mu)\rt] = (\nu - \mu)^T \Sigma^{-1}(\nu - \mu) + \text{tr}(\Sigma^{-1}\Psi)
+\]
+
+As $\Psi = \text{diag}(\psi_{11}, \ldots, \psi_{dd})$ is a diagonal matrix, we have:
+\[
+    \text{tr}(\Sigma^{-1} \Psi) = \sum_{i=1}^d [ \Sigma^{-1} ]_{ii} \psi_{ii}
+\]
+Note that in general $[ \Sigma^{-1} ]_{ii} \neq [\Sigma_{ii}]^{-1}$.
+
+Now we can put these back into our expression for $\KL(q \; || \; p)$:
+\[
+    \KL(q \; || \; p)
+    & = -\frac{1}{2} \log |\Psi| + \frac{1}{2} \log |\Sigma| - \frac{d}{2} + \frac{1}{2}\lt[ (\nu - \mu)^T \Sigma^{-1} (\nu - \mu) + \text{tr}(\Sigma^{-1} \Psi) \rt] \\
+    & = (\frac{1}{2} \log |\Sigma| - \frac{d}{2}) + \frac{1}{2}(\nu - \mu)^T \Sigma^{-1} (\nu - \mu) - \frac{1}{2} \log |\Psi| + \frac{1}{2} \sum_{i=1}^d [ \Sigma^{-1} ]_{ii} \psi_{ii} \\
+    & = K + \frac{1}{2}(\nu - \mu)^T \Sigma^{-1} (\nu - \mu) - \frac{1}{2} \log |\Psi| + \frac{1}{2} \sum_{i=1}^d [ \Sigma^{-1} ]_{ii} \psi_{ii}
+\]
+where $K = \frac{1}{2} \log |\Sigma| - \frac{d}{2}$ and does not depend on the variational parameters.
+Note that the equation we wanted to find was
+\[
+    K + \frac{1}{2}(\nu - \mu)^T \Sigma (\nu - \mu) + \frac{1}{2} \log |\Psi| + \frac{1}{2} \sum_{i=1}^d [ \Sigma^{-1} ]_{ii} \psi_{ii}
+\]
+which I believe is missing the inverse on $\Sigma$, and I think it should be $- \frac{1}{2} \log |\Psi|$ not $+ \frac{1}{2} \log |\Psi|$.
+
+
+
+
+
+
+\subsection*{(c)}
+
+We want to find the variational parameters, $\nu$ and $\Psi$, that minimise $\KL(q \; || \; p)$.
+
+Note: this is Proposition 2.1 from \href{https://arxiv.org/pdf/2302.09163}{The Shrinkage-Delinkage Trade-off: An Analysis of Factorized Gaussian Approximations for Variational Inference}.
+
+From part (b), we have
+\[
+    \KL(q \; || \; p) = K - \frac{1}{2}\log |\Psi| + \frac{1}{2}(\nu - \mu)^T \Sigma^{-1} (\nu - \mu) + \frac{1}{2}\sum_{i=1}^d [\Sigma^{-1}]_{ii} \psi_{ii}
+\]
+
+Since $\Psi$ is diagonal, $\log|\Psi| = \log \prod_{i=1}^{d} \psi_{ii} = \sum_{i=1}^d \log \psi_{ii}$.
+
+First, we will minimise with respect to $\nu$.
+The only term depending on $\nu$ is $\frac{1}{2}(\nu - \mu)^T \Sigma^{-1} (\nu - \mu)$, which is non-negative and clearly minimised when $\nu = \mu$, in which case, this term is zero.
+
+So $\KL(q \; || \; p)$ becomes:
+\[
+    \KL(q \; || \; p) \big|_{\nu = \mu} = K - \frac{1}{2} \sum_{i=1}^d \log \psi_i + 0 + \frac{1}{2}\sum_{i=1}^d [\Sigma^{-1}]_{ii} \psi_i
+\]
+
+Now we optimise with respect to $\Psi$. We want to minimise $\KL(q \; || \; p) \big|_{\nu = \mu}$.
+So we the derivative with respect to $\psi_{ii}$, and setting it equal to zero:
+\[
+    \frac{\partial \KL(q \; || \; p) \big|_{\nu = \mu}}{\partial \psi_{ii}} = -\frac{1}{2\psi_{ii}} + \frac{1}{2}[\Sigma^{-1}]_{ii} \overset{\text{set}}{=} 0
+\]
+Now solving for $\psi_{ii}$ we have:
+\[
+    \frac{1}{\psi_{ii}} = [\Sigma^{-1}]_{ii}
+\]
+so
+\[
+    \psi_{ii} = \frac{1}{[\Sigma^{-1}]_{ii}}
+\]
+
+Therefore, we have shown that the optimal variational parameters are $\nu^* = \mu$, and $\Psi^*_{ii} = \frac{1}{[\Sigma^{-1}]_{ii}}$ for $i = 1, \ldots, d$.
+We could show that this is a global minimum, not just a local optima, but, these are the variational parameters which minimise $\KL(q \; || \; p)$.
+
+
+
+
+
+
+\subsection*{(d)}
+Finally, we will show that the variational approximation underestimates the variance of $p$.
+
+Note that this is alludes to the paper \href{https://arxiv.org/pdf/2403.13748}{Variational Inference for Uncertainty Quantification: an Analysis of Trade-offs}, which I presented at Geoff's reading group.
+There's another proof (as you know) at Theorem 3.1 \href{https://arxiv.org/pdf/2302.09163}{The Shrinkage-Delinkage Trade-off: An Analysis of Factorized Gaussian Approximations for Variational Inference}.
+My part (i) will be more matrix-identity-heavy, but part (ii) is the same as yours.
+
+\textbf{(i)} First, we want to show that $\text{Var}(z_i | z_{-i}) = \dfrac{1}{[\Sigma^{-1}]_{ii}}$.
+
+For $z \sim \Norm(\mu, \Sigma)$, rearrange the indices to have:
+\[
+    z = \begin{pmatrix} z_i \\ z_{-i} \end{pmatrix}, \quad
+    \mu = \begin{pmatrix} \mu_i \\ \mu_{-i} \end{pmatrix}, \quad
+    \Sigma = \begin{pmatrix} \Sigma_{ii} & \Sigma_{i,-i} \\ \Sigma_{-i,i} & \Sigma_{-i,-i} \end{pmatrix}
+\]
+where $z_{-i}$ are all component of $z$ without index $i$.
+
+The $z_i$ given $z_{-i}$ is also Gaussian with conditional variance:
+\[
+    \text{Var}(z_i | z_{-i}) = \Sigma_{ii} - \Sigma_{i,-i} \Sigma_{-i,-i}^{-1} \Sigma_{-i,i}
+\]
+which is given by equation 353 in the Matrix Cookbook.
+
+But, $\Sigma$ is a block matrix.
+From Section 9.1.3 of the Matrix Cookbook, we have
+\[
+    A^{-1} = \begin{pmatrix} A_{11} & A_{12} \\ A_{21} & A_{22} \end{pmatrix}^{-1} = \begin{pmatrix} (A_{11} - A_{12}A^{-1}_{22}A_{21})^{-1} & -A_{11}^{-1}A_{12}(A_{22} - A_{21}A^{-1}_{11}A_{12})^{-1} \\ -(A_{22} - A_{21}A^{-1}_{11}A_{12})^{-1} A_{21} A_{11}^{-1} & (A_{22} - A_{21}A^{-1}_{11}A_{12})^{-1} \end{pmatrix}
+\]
+
+But
+\[
+    (\text{Var}(z_i | z_{-i}))^{-1} = (\Sigma_{ii} - \Sigma_{i,-i} \Sigma_{-i,-i}^{-1} \Sigma_{-i,i})^{-1} = (A_{11} - A_{12}A^{-1}_{22}A_{21})^{-1} = [A^{-1}]_{11}
+\]
+
+So
+\[
+    (\text{Var}(z_i | z_{-i}))^{-1} = [\Sigma^{-1}]_{ii} \implies \text{Var}(z_i | z_{-i}) = ([\Sigma^{-1}]_{ii})^{-1} = \dfrac{1}{[\Sigma^{-1}]_{ii}}
+\]
+
+
+
+\textbf{(ii)} Now we want to show that $\Psi_{ii} \leq \Sigma_{ii}$ and that this inequality must be strict for at least two coordinates if $\Sigma$ is not a diagonal matrix.
+
+In part (c) we showed that the optimal variational parameters are $\nu = \mu$, and $\Psi_{ii} = \frac{1}{[\Sigma^{-1}]_{ii}}$ for $i = 1, \ldots, d$.
+In part (d) we showed that $\text{Var}(z_i | z_{-i}) = \dfrac{1}{[\Sigma^{-1}]_{ii}}$.
+So the optimal parameters have $\text{Var}(z_i | z_{-i}) = \Psi_{ii}$.
+
+By the law of total variance:
+\[
+    \text{Var}(z_i) = \E[\text{Var}(z_i | z_{-i})] + \text{Var}(\E[z_i | z_{-i}])
+\]
+but both terms are non-negative and $\text{Var}(z_i | z_{-i})$ is constant.
+
+So:
+\[
+    \text{Var}(z_i) = \E[\text{Var}(z_i | z_{-i})] + \text{Var}(\E[z_i | z_{-i}]) \geq \E[\text{Var}(z_i | z_{-i})] = \text{Var}(z_i | z_{-i})
+\]
+
+Therefore
+\[
+    \Sigma_{ii} = \text{Var}(z_i) \geq \text{Var}(z_i | z_{-i}) = \Psi_{ii}
+\]
+
+
+
+We have an equality if and only if $\text{Var}(\E[z_i | z_{-i}]) = 0$.
+Which means $\E[z_i | z_{-i}]$ is constant and equal to $\mu_i$ almost surely.
+This happens if and only if $z_i$ and $z_{-i}$ are uncorrelated.
+This means that the $i$th row and column of $\Sigma$ (except on the diagonal) are both full of zeroes.
+
+If $\Sigma$ is non-diagonal, then there exist at least two coordinates $i, j$ such that $\Sigma_{ij} = \Sigma_{ji} \neq 0$.
+Therefore $\text{Var}(\E[z_i | z_{j}]) \neq 0$.
+So $\Sigma_{ii} > \Psi_{ii}$ and $\Sigma_{jj} > \Psi_{jj}$ are strict inequalities.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\newpage
+\section*{AI usage}
+
+I used AI in the following ways:
+
+\bitem
+\item The Google Chrome AI Overview all the time when quickly googling this and that like LaTeX, ggplot, how to set the number of cores to use, how to choose how many decimals to show, how to get the inverse matrix in R, these types of commands.
+\item To make me a cheatsheet for Rnw chunk options.
+\item To ask how the $\sigma$ positive truncated Normal prior for the once compartment model is handled when specifying `\verb! real<lower=0> sigma!` in the parameter block but `\verb!sigma ~ normal(0, 1);!` in the model block. So, asking if I could use a regular Normal prior, and truncate in the parameter block.
+\item In the first version of the homework, there was `$u_{\text{peri}}$` in equations 1, not `$u_{\text{cent}}$`. I asked if this was a pharmacokinetic term or a typo. It said a typo, and the homework assignment got updated.
+\item When compiling this Rnw file, I got this error `\verb! Error: unexpected '@' in "@" !` which AI-ed to see how to fix it.
+\eitem
+
+
+
+\end{document}
